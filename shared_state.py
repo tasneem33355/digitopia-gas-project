@@ -5,11 +5,9 @@ from datetime import datetime
 STATE_FILE = "shared_state.json"
 
 def save_shared_state(data_buffer, scenario, row_indices, prediction_data):
-    """حفظ الحالة المشتركة في ملف"""
     try:
-        # تحويل timestamps لـ strings قبل الحفظ
         cleaned_buffer = []
-        for item in data_buffer[-50:]:  # آخر 50 نقطة فقط
+        for item in data_buffer[-50:]:  
             if isinstance(item, dict):
                 cleaned_item = item.copy()
                 if 'timestamp' in cleaned_item:
@@ -24,7 +22,6 @@ def save_shared_state(data_buffer, scenario, row_indices, prediction_data):
             'last_update': datetime.now().isoformat()
         }
         
-        # تأكد إن المجلد موجود
         os.makedirs(os.path.dirname(os.path.abspath(STATE_FILE)) if os.path.dirname(STATE_FILE) else ".", exist_ok=True)
         
         with open(STATE_FILE, 'w', encoding='utf-8') as f:
@@ -38,13 +35,12 @@ def save_shared_state(data_buffer, scenario, row_indices, prediction_data):
         return False
 
 def load_shared_state():
-    """قراءة الحالة المشتركة من الملف"""
+ 
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, 'r', encoding='utf-8') as f:
                 state = json.load(f)
             
-            # تحويل timestamps من strings لـ datetime objects
             if 'data_buffer' in state:
                 for item in state['data_buffer']:
                     if 'timestamp' in item and isinstance(item['timestamp'], str):
@@ -60,7 +56,6 @@ def load_shared_state():
         return None
 
 def is_state_fresh(max_age_seconds=15):
-    """فحص إن الحالة المشتركة حديثة"""
     try:
         state = load_shared_state()
         if state and 'last_update' in state:
@@ -82,10 +77,8 @@ def is_state_fresh(max_age_seconds=15):
         return False, None
 
 def test_shared_state():
-    """اختبار الـ shared state"""
     print("🧪 Testing shared state...")
     
-    # بيانات تجريبية
     test_data = [{
         'timestamp': datetime.now(),
         'pressure': 35.0,
@@ -99,12 +92,10 @@ def test_shared_state():
         'confidence': 0.8
     }
     
-    # اختبار الحفظ
     success = save_shared_state(test_data, "normal", {"normal": 0}, test_prediction)
     if success:
         print("✅ Save test passed")
         
-        # اختبار التحميل
         is_fresh, loaded_state = is_state_fresh(max_age_seconds=30)
         if is_fresh:
             print("✅ Load test passed")

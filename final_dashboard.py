@@ -5,9 +5,9 @@ from datetime import datetime, timedelta
 import time
 import joblib
 import plotly.graph_objects as go
-import shared_state  # ← إضافة الـ import
-import os  # ← إضافة جديد
-import json  # ← إضافة جديد
+import shared_state 
+import os  
+import json  
 
 # ===============================
 # Config Streamlit Page
@@ -292,16 +292,13 @@ with st.sidebar:
         st.write(f"- Flow: {last_data['flow_rate']:.1f}")
         st.write(f"- Temperature: {last_data['temperature']:.1f}")
 
-    # ★ إضافة debugging info الجديد
     st.markdown("---")
     st.write("### 🔄 Data Sync Status")
     
-    # فحص ملف الـ shared state
     if os.path.exists("shared_state.json"):
         file_size = os.path.getsize("shared_state.json")
         st.success(f"✅ Shared file exists ({file_size} bytes)")
         
-        # فحص عمر البيانات
         try:
             is_fresh, state_data = shared_state.is_state_fresh(max_age_seconds=30)
             if is_fresh:
@@ -333,23 +330,19 @@ with st.expander("ℹ️ About the Data", expanded=False):
     """)
 
 current_time = datetime.now()
-# ★ التعديل الرئيسي هنا - مع إضافة debug info
 if (current_time - st.session_state.last_update).total_seconds() >= 10:
     new_point = create_scenario_data(scenario)
     st.session_state.data_buffer.append(new_point)
     
-    # تحديد حجم البيانات
     if len(st.session_state.data_buffer) > 500:
         st.session_state.data_buffer = st.session_state.data_buffer[-500:]
     
     st.session_state.last_update = current_time
     
-    # حفظ البيانات في الملف المشترك مع debugging
     row_indices = {}
     for s in ['normal', 'warning', 'failure']:
         row_indices[s] = st.session_state.get(f'{s}_row_index', 0)
     
-    # حساب التنبؤ الحالي
     df = pd.DataFrame(st.session_state.data_buffer)
     features = create_features(df)
     prediction, probabilities = predict_with_model(features)
@@ -360,16 +353,14 @@ if (current_time - st.session_state.last_update).total_seconds() >= 10:
         'confidence': float(np.max(probabilities))
     }
     
-    # محاولة حفظ البيانات مع error handling
     try:
         save_success = shared_state.save_shared_state(
-            st.session_state.data_buffer[-50:],  # آخر 50 نقطة
+            st.session_state.data_buffer[-50:],  
             scenario,
             row_indices,
             prediction_data
         )
         
-        # ملاحظة: شيلنا عرض رسايل الـ sync عشان ميكترش
         
     except Exception as e:
         st.sidebar.error(f"❌ Sync error: {str(e)}")
@@ -490,10 +481,10 @@ if st.session_state.data_buffer:
         st.dataframe(
     display_df.style.set_properties(
         **{
-            'background-color': '#041C32',  # كحلي داكن زي الـ sidebar
-            'color': '#FDF5E6',             # نص فاتح
+            'background-color': '#041C32',  
+            'color': '#FDF5E6',            
             'font-weight': 'bold',
-            'border': '1px solid #0B3D91'   # حدود خفيفة، اختيارية
+            'border': '1px solid #0B3D91' 
         }
     ),
     hide_index=True,
@@ -504,7 +495,7 @@ else:
     st.info("Waiting for data... Dashboard will start automatically.")
 
 # Floating Chatbot Button (Round Style)
-chatbot_url = "http://localhost:8502/"
+chatbot_url = "https://digitopia-gas-project-5uqgx5ubnmmhjyrau7knyc.streamlit.app/"
 
 st.markdown(
     f"""

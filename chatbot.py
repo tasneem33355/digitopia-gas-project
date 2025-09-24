@@ -3,9 +3,9 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import joblib
-import shared_state  # ← إضافة الـ import
-import os  # ← إضافة جديد
-import json  # ← إضافة جديد
+import shared_state  
+import os  
+import json  
 
 # Config Streamlit Page
 st.set_page_config(
@@ -18,16 +18,16 @@ st.set_page_config(
 page_bg = """
 <style>
 [data-testid="stAppViewContainer"] {
-    background: linear-gradient(135deg, #000000 30%, #0B3D91 100%);  /* أسود إلى كحلي داكن */
-    color: #FDF5E6;  /* نص فاتح */
+    background: linear-gradient(135deg, #000000 30%, #0B3D91 100%);  
+    color: #FDF5E6;  
 }
 [data-testid="stHeader"] {
     background: rgba(0,0,0,0);
 }
 input[type="text"] {
-    background-color: #041C32;   /* صندوق إدخال أزرق داكن */
-    color: #FDF5E6;              /* نص فاتح */
-    border: 1px solid #0B3D91;   /* حدود أزرق داكن */
+    background-color: #041C32;   
+    color: #FDF5E6;             
+    border: 1px solid #0B3D91;   
     padding: 8px;
     border-radius: 8px;
 }
@@ -236,18 +236,15 @@ if 'last_update' not in st.session_state:
 def get_current_system_data():
     """Get synchronized data from dashboard - FIXED VERSION"""
     
-    # جرب تقرأ من الملف المشترك أولاً
     try:
         is_fresh, shared_state_data = shared_state.is_state_fresh(max_age_seconds=20)
         
         if is_fresh and shared_state_data:
             st.sidebar.success("✅ Using dashboard data")
             
-            # استخدم البيانات المشتركة من الداشبورد
             st.session_state.data_buffer = shared_state_data['data_buffer']
             st.session_state.current_scenario = shared_state_data['current_scenario']
             
-            # سنك الـ row indices
             for scenario, index in shared_state_data['row_indices'].items():
                 st.session_state[f'{scenario}_row_index'] = index
             
@@ -255,7 +252,6 @@ def get_current_system_data():
                 df = pd.DataFrame(st.session_state.data_buffer)
                 current_data = df.iloc[-1]
                 
-                # استخدم بيانات التنبؤ المحفوظة
                 prediction_data = shared_state_data['prediction_data']
                 prediction = prediction_data['prediction']
                 probabilities = np.array(prediction_data['probabilities'])
@@ -268,7 +264,6 @@ def get_current_system_data():
     except Exception as e:
         st.sidebar.error(f"❌ Sync error: {str(e)}")
     
-    # إذا مفيش بيانات مشتركة حديثة، استخدم الطريقة القديمة
     st.sidebar.info("🔄 Generating independent data")
     
     current_time = datetime.now()
@@ -352,7 +347,6 @@ if "chat_history" not in st.session_state:
 # Get Live Data (Synchronized with Dashboard)
 current_data, prediction, probabilities = get_current_system_data()
 
-# --- ضع CSS هنا لتلوين الأزرار والمربعات ---
 st.markdown("""
 <style>
 div.stButton > button {
@@ -439,17 +433,14 @@ if st.button("🗑️ Clear Chat"):
     st.session_state.chat_history = []
     st.rerun()
 
-# ★ إضافة Sidebar debugging info الجديد
 with st.sidebar:
     st.markdown("---")
     st.write("### 🔄 Sync Status")
     
-    # فحص ملف الـ shared state
     if os.path.exists("shared_state.json"):
         file_size = os.path.getsize("shared_state.json")
         st.success(f"✅ Found shared file ({file_size} bytes)")
         
-        # عرض آخر تحديث
         try:
             with open("shared_state.json", 'r') as f:
                 state = json.load(f)
@@ -483,7 +474,7 @@ st.markdown(
     <style>
     /* Sidebar container */
     [data-testid="stSidebar"] {
-        background-color: #0E4D92; /* الأزرق بتاع الداشبورد */
+        background-color: #0E4D92; 
     }
 
     /* Sidebar text */
