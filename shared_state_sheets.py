@@ -4,26 +4,37 @@ import gspread
 from google.oauth2.service_account import Credentials
 import threading
 import time
-import streamlit as st
 
-# Google Sheets Configuration - استخدام st.secrets
-SPREADSHEET_ID = st.secrets["GOOGLE_SHEETS_ID"]
+# Global configuration - سيتم تحميلها عند أول استدعاء
+_config_loaded = False
+SPREADSHEET_ID = None
 WORKSHEET_NAME = "dashboard_data"
+SERVICE_ACCOUNT_INFO = None
 
-# Service account credentials - استخدام st.secrets
-SERVICE_ACCOUNT_INFO = {
-    "type": st.secrets["SERVICE_ACCOUNT"]["type"],
-    "project_id": st.secrets["SERVICE_ACCOUNT"]["project_id"],
-    "private_key_id": st.secrets["SERVICE_ACCOUNT"]["private_key_id"],
-    "private_key": st.secrets["SERVICE_ACCOUNT"]["private_key"],
-    "client_email": st.secrets["SERVICE_ACCOUNT"]["client_email"],
-    "client_id": st.secrets["SERVICE_ACCOUNT"]["client_id"],
-    "auth_uri": st.secrets["SERVICE_ACCOUNT"]["auth_uri"],
-    "token_uri": st.secrets["SERVICE_ACCOUNT"]["token_uri"],
-    "auth_provider_x509_cert_url": st.secrets["SERVICE_ACCOUNT"]["auth_provider_x509_cert_url"],
-    "client_x509_cert_url": st.secrets["SERVICE_ACCOUNT"]["client_x509_cert_url"],
-    "universe_domain": st.secrets["SERVICE_ACCOUNT"]["universe_domain"]
-}
+def _load_config():
+    """تحميل الإعدادات من st.secrets عند الحاجة"""
+    global _config_loaded, SPREADSHEET_ID, SERVICE_ACCOUNT_INFO
+    
+    if not _config_loaded:
+        import streamlit as st
+        
+        SPREADSHEET_ID = st.secrets["GOOGLE_SHEETS_ID"]
+        
+        SERVICE_ACCOUNT_INFO = {
+            "type": st.secrets["SERVICE_ACCOUNT"]["type"],
+            "project_id": st.secrets["SERVICE_ACCOUNT"]["project_id"],
+            "private_key_id": st.secrets["SERVICE_ACCOUNT"]["private_key_id"],
+            "private_key": st.secrets["SERVICE_ACCOUNT"]["private_key"],
+            "client_email": st.secrets["SERVICE_ACCOUNT"]["client_email"],
+            "client_id": st.secrets["SERVICE_ACCOUNT"]["client_id"],
+            "auth_uri": st.secrets["SERVICE_ACCOUNT"]["auth_uri"],
+            "token_uri": st.secrets["SERVICE_ACCOUNT"]["token_uri"],
+            "auth_provider_x509_cert_url": st.secrets["SERVICE_ACCOUNT"]["auth_provider_x509_cert_url"],
+            "client_x509_cert_url": st.secrets["SERVICE_ACCOUNT"]["client_x509_cert_url"],
+            "universe_domain": st.secrets["SERVICE_ACCOUNT"]["universe_domain"]
+        }
+        
+        _config_loaded = True
 
 # Global variables for optimization
 _sheets_client = None
@@ -37,6 +48,9 @@ def get_sheets_client():
     
     if _sheets_client is None:
         try:
+            # تحميل الإعدادات أولاً
+            _load_config()
+            
             scope = ["https://spreadsheets.google.com/feeds", 
                      "https://www.googleapis.com/auth/drive"]
             
@@ -55,6 +69,9 @@ def get_worksheet():
     
     if _worksheet_cache is None:
         try:
+            # تحميل الإعدادات أولاً
+            _load_config()
+            
             client = get_sheets_client()
             if not client:
                 return None
