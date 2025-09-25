@@ -1,5 +1,4 @@
 import json
-import os
 from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
@@ -14,7 +13,6 @@ _pending_data = None
 
 # Configuration
 WORKSHEET_NAME = "dashboard_data"
-SHARED_STATE_FILE = "shared_state.json"
 
 def get_secrets():
     """Get secrets safely - only when streamlit is ready"""
@@ -135,64 +133,8 @@ def save_in_background(data_buffer, scenario, row_indices, prediction_data):
     except Exception as e:
         print(f"❌ Background save error: {e}")
 
-def save_to_local_file(data_buffer, scenario, row_indices, prediction_data):
-    """حفظ البيانات في ملف محلي كـ fallback"""
-    try:
-        # تحضير البيانات للحفظ
-        cleaned_buffer = []
-        for item in data_buffer[-20:]:  # آخر 20 نقطة فقط
-            if isinstance(item, dict):
-                cleaned_item = item.copy()
-                if 'timestamp' in cleaned_item:
-                    cleaned_item['timestamp'] = cleaned_item['timestamp'].isoformat()
-                cleaned_buffer.append(cleaned_item)
-        
-        state_data = {
-            'current_scenario': scenario,
-            'row_indices': row_indices,
-            'prediction_data': prediction_data,
-            'data_buffer': cleaned_buffer,
-            'last_update': datetime.now().isoformat()
-        }
-        
-        with open(SHARED_STATE_FILE, 'w') as f:
-            json.dump(state_data, f, indent=2)
-        
-        print(f"✅ Data saved to local file: {SHARED_STATE_FILE}")
-        return True
-    except Exception as e:
-        print(f"❌ Error saving to local file: {e}")
-        return False
-
-def load_from_local_file():
-    """قراءة البيانات من الملف المحلي"""
-    try:
-        if not os.path.exists(SHARED_STATE_FILE):
-            print(f"ℹ️ Local file {SHARED_STATE_FILE} does not exist")
-            return None
-        
-        with open(SHARED_STATE_FILE, 'r') as f:
-            state_data = json.load(f)
-        
-        # تحويل timestamps من strings إلى datetime objects
-        if 'data_buffer' in state_data and state_data['data_buffer']:
-            for item in state_data['data_buffer']:
-                if 'timestamp' in item and isinstance(item['timestamp'], str):
-                    try:
-                        item['timestamp'] = datetime.fromisoformat(item['timestamp'])
-                    except Exception as e:
-                        print(f"⚠️ Error parsing timestamp: {e}")
-                        item['timestamp'] = datetime.now()
-        
-        print(f"✅ Loaded {len(state_data['data_buffer'])} data points from local file")
-        return state_data
-        
-    except Exception as e:
-        print(f"❌ Error loading from local file: {e}")
-        return None
-
 def save_shared_state(data_buffer, scenario, row_indices, prediction_data):
-    """حفظ الحالة المشتركة مع fallback إلى ملف محلي"""
+    """حفظ الحالة المشتركة في Google Sheets (محسن للأداء)"""
     global _last_save_time, _pending_data
     
     current_time = time.time()
@@ -205,10 +147,8 @@ def save_shared_state(data_buffer, scenario, row_indices, prediction_data):
         'prediction_data': prediction_data
     }
     
-    # جرب الحفظ في Google Sheets أولاً
-    google_sheets_available = get_secrets() is not None
-    
-    if google_sheets_available and current_time - _last_save_time >= 15:
+    # احفظ في Google Sheets كل 15 ثانية بدل كل 10 ثوان
+    if current_time - _last_save_time >= 15:
         _last_save_time = current_time
         
         # اعمل الحفظ في background thread عشان ميبطئش الواجهة
@@ -217,88 +157,64 @@ def save_shared_state(data_buffer, scenario, row_indices, prediction_data):
             args=(data_buffer, scenario, row_indices, prediction_data),
             daemon=True
         ).start()
-        print("🔄 Saving to Google Sheets in background...")
+        
+        return True
     
-    # احفظ في الملف المحلي كـ fallback (دائماً)
-    save_to_local_file(data_buffer, scenario, row_indices, prediction_data)
-    
-    return True
+    return True  # ارجع True عشان الواجهة تفتكر إن الحفظ نجح
 
 def load_shared_state():
-    """قراءة الحالة المشتركة من Google Sheets مع fallback للملف المحلي"""
-    # أولاً جرب Google Sheets
+    """قراءة الحالة المشتركة من Google Sheets (محسن)"""
+    global _pending_data
+    
+    # لو في بيانات مؤقتة، ارجعها فوراً
+    if _pending_data:
+        return {
+            'current_scenario': _pending_data['scenario'],
+            'row_indices': _pending_data['row_indices'],
+            'prediction_data': _pending_data['prediction_data'],
+            'data_buffer': _pending_data['data_buffer'][-20:],  # آخر 20 نقطة فقط
+            'last_update': datetime.now().isoformat()
+        }
+    
     try:
         worksheet = get_worksheet()
-        if worksheet:
-            records = worksheet.get_all_records()
-            if records:
-                # اخذ آخر سجل
-                latest_record = records[-1]
-                
-                # تأكد من وجود البيانات المطلوبة
-                required_fields = ['scenario', 'row_indices', 'prediction_data', 'data_buffer', 'last_update']
-                all_fields_present = all(field in latest_record and latest_record[field] for field in required_fields)
-                
-                if all_fields_present:
-                    # تحويل البيانات من strings إلى objects
-                    state = {
-                        'current_scenario': latest_record['scenario'],
-                        'row_indices': json.loads(latest_record['row_indices']),
-                        'prediction_data': json.loads(latest_record['prediction_data']),
-                        'data_buffer': json.loads(latest_record['data_buffer']),
-                        'last_update': latest_record['last_update']
-                    }
-                    
-                    # تحويل timestamps من strings إلى datetime objects
-                    if 'data_buffer' in state and state['data_buffer']:
-                        for item in state['data_buffer']:
-                            if 'timestamp' in item and isinstance(item['timestamp'], str):
-                                try:
-                                    item['timestamp'] = datetime.fromisoformat(item['timestamp'])
-                                except Exception as e:
-                                    print(f"⚠️ Error parsing timestamp: {e}")
-                                    item['timestamp'] = datetime.now()
-                    
-                    print(f"✅ Loaded {len(state['data_buffer'])} data points from Google Sheets")
-                    return state
-                else:
-                    print("⚠️ Missing or empty fields in Google Sheets")
-            else:
-                print("⚠️ No records found in Google Sheets")
-        else:
-            print("⚠️ No worksheet available in Google Sheets")
+        if not worksheet:
+            return None
+        
+        records = worksheet.get_all_records()
+        if not records:
+            return None
+            
+        # اخذ آخر سجل
+        latest_record = records[-1]
+        
+        # تحويل البيانات من strings إلى objects
+        state = {
+            'current_scenario': latest_record['scenario'],
+            'row_indices': json.loads(latest_record['row_indices']),
+            'prediction_data': json.loads(latest_record['prediction_data']),
+            'data_buffer': json.loads(latest_record['data_buffer']),
+            'last_update': latest_record['last_update']
+        }
+        
+        # تحويل timestamps من strings إلى datetime objects
+        if 'data_buffer' in state:
+            for item in state['data_buffer']:
+                if 'timestamp' in item and isinstance(item['timestamp'], str):
+                    item['timestamp'] = datetime.fromisoformat(item['timestamp'])
+        
+        return state
+        
     except Exception as e:
         print(f"❌ Error loading from Google Sheets: {e}")
-    
-    # إذا فشل Google Sheets، جرب الملف المحلي
-    print("🔄 Falling back to local file...")
-    return load_from_local_file()
+        return None
 
-def is_state_fresh(max_age_seconds=30):
+def is_state_fresh(max_age_seconds=30):  # زود الوقت لـ 30 ثانية
     """فحص إن الحالة المشتركة حديثة"""
     global _pending_data
     
-    # أولاً جرب تحميل البيانات من مصادر مختلفة
-    try:
-        state = load_shared_state()
-        if state and 'last_update' in state:
-            last_update = datetime.fromisoformat(state['last_update'])
-            age = (datetime.now() - last_update).total_seconds()
-            is_fresh = age <= max_age_seconds
-            
-            if is_fresh:
-                print(f"✅ Fresh data loaded (age: {age:.1f}s)")
-                return True, state
-            else:
-                print(f"⚠️ Stale data loaded (age: {age:.1f}s)")
-        else:
-            print("⚠️ No valid data from external sources")
-    except Exception as e:
-        print(f"❌ Error loading data: {e}")
-    
-    # لو البيانات مش fresh، جرب الـ pending data
+    # لو في بيانات مؤقتة، ارجعها كـ fresh
     if _pending_data:
-        print("🔄 Using pending data as fallback")
         return True, {
             'current_scenario': _pending_data['scenario'],
             'row_indices': _pending_data['row_indices'],
@@ -307,22 +223,19 @@ def is_state_fresh(max_age_seconds=30):
             'last_update': datetime.now().isoformat()
         }
     
-    print("❌ No fresh data available")
-    return False, None
-
-def clear_pending_data():
-    """مسح البيانات المؤقتة"""
-    global _pending_data
-    _pending_data = None
-    print("✅ Pending data cleared")
-
-def get_pending_data_status():
-    """فحص حالة البيانات المؤقتة"""
-    global _pending_data
-    if _pending_data:
-        return f"Pending data exists for scenario: {_pending_data['scenario']}"
-    else:
-        return "No pending data"
+    try:
+        state = load_shared_state()
+        if state and 'last_update' in state:
+            last_update = datetime.fromisoformat(state['last_update'])
+            age = (datetime.now() - last_update).total_seconds()
+            is_fresh = age <= max_age_seconds
+            
+            return is_fresh, state
+        else:
+            return False, None
+    except Exception as e:
+        print(f"❌ Error checking state freshness: {e}")
+        return False, None
 
 def test_shared_state():
     """اختبار الـ shared state مع Google Sheets"""

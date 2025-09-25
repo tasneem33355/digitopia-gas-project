@@ -234,26 +234,21 @@ if 'last_update' not in st.session_state:
 
 # ★ Get Current System Data (Synchronized with Dashboard) - UPDATED
 def get_current_system_data():
-    """Get synchronized data from dashboard - IMPROVED VERSION"""
+    """Get synchronized data from dashboard - FIXED VERSION"""
     
     try:
-        # محاولة الحصول على بيانات حديثة من shared_state
-        is_fresh, shared_state_data = shared_state.is_state_fresh(max_age_seconds=30)
+        is_fresh, shared_state_data = shared_state.is_state_fresh(max_age_seconds=20)
         
         if is_fresh and shared_state_data:
-            st.sidebar.success("✅ Using fresh shared data")
+            st.sidebar.success("✅ Using dashboard data")
             
-            # تحديث session state بالبيانات الجديدة
-            if 'data_buffer' in shared_state_data and shared_state_data['data_buffer']:
-                st.session_state.data_buffer = shared_state_data['data_buffer']
-                st.session_state.current_scenario = shared_state_data['current_scenario']
-                
-                # تحديث row indices
-                if 'row_indices' in shared_state_data:
-                    for scenario, index in shared_state_data['row_indices'].items():
-                        st.session_state[f'{scenario}_row_index'] = index
-                
-                # استخدام البيانات المحدثة
+            st.session_state.data_buffer = shared_state_data['data_buffer']
+            st.session_state.current_scenario = shared_state_data['current_scenario']
+            
+            for scenario, index in shared_state_data['row_indices'].items():
+                st.session_state[f'{scenario}_row_index'] = index
+            
+            if st.session_state.data_buffer:
                 df = pd.DataFrame(st.session_state.data_buffer)
                 current_data = df.iloc[-1]
                 
@@ -262,46 +257,35 @@ def get_current_system_data():
                 probabilities = np.array(prediction_data['probabilities'])
                 
                 st.sidebar.info(f"📊 Synced: {len(st.session_state.data_buffer)} points")
-                st.sidebar.info(f"🔄 Last update: {shared_state_data.get('last_update', 'Unknown')}")
-                
                 return current_data, prediction, probabilities
-            else:
-                st.sidebar.warning("⚠️ Shared data is empty")
         else:
-            st.sidebar.warning("⚠️ No fresh shared data available")
+            st.sidebar.warning("⚠️ No fresh dashboard data")
             
     except Exception as e:
         st.sidebar.error(f"❌ Sync error: {str(e)}")
     
-    # إذا لم تكن هناك بيانات حديثة، استخدم البيانات المحلية أو أنشئ بيانات جديدة
-    st.sidebar.info("🔄 Using local data generation")
+    st.sidebar.info("🔄 Generating independent data")
     
     current_time = datetime.now()
     
-    # تحديث البيانات كل 10 ثوان
     if (current_time - st.session_state.last_update).total_seconds() >= 10:
         new_point = create_scenario_data(st.session_state.current_scenario)
         st.session_state.data_buffer.append(new_point)
         
-        # حافظ على آخر 500 نقطة
         if len(st.session_state.data_buffer) > 500:
             st.session_state.data_buffer = st.session_state.data_buffer[-500:]
         
         st.session_state.last_update = current_time
     
-    # تأكد من وجود بيانات
     if not st.session_state.data_buffer:
         new_point = create_scenario_data(st.session_state.current_scenario)
         st.session_state.data_buffer.append(new_point)
     
-    # إنشاء التنبؤات
     df = pd.DataFrame(st.session_state.data_buffer)
     current_data = df.iloc[-1]
     
     features = create_features(df)
     prediction, probabilities = predict_with_model(features)
-    
-    st.sidebar.info(f"📊 Local data: {len(st.session_state.data_buffer)} points")
     
     return current_data, prediction, probabilities
 
@@ -450,70 +434,28 @@ if st.button("🗑️ Clear Chat"):
     st.rerun()
 
 # ===============================
-# Sidebar Sync Status (UPDATED and IMPROVED)
+# Sidebar Sync Status (UPDATED to Google Sheets)
 # ===============================
 with st.sidebar:
     st.markdown("---")
     st.write("### 🔄 Sync Status")
     
     try:
-        is_fresh, state_data = shared_state.is_state_fresh(max_age_seconds=30)
+        is_fresh, state_data = shared_state.is_state_fresh(max_age_seconds=20)
         if is_fresh and state_data:
             st.success("✅ Data is fresh")
             st.write(f"Points: {len(state_data.get('data_buffer', []))}")
-            st.write(f"Scenario: {state_data.get('current_scenario', 'Unknown')}")
-            
             last_update = state_data['last_update']
-            try:
-                if isinstance(last_update, str):
-                    last_update_dt = datetime.fromisoformat(last_update)
-                else:
-                    last_update_dt = last_update
-                age = (datetime.now() - last_update_dt).total_seconds()
-                st.write(f"Age: {age:.1f}s ago")
-            except:
-                st.write("Age: Unknown")
+            age = (datetime.now() - datetime.fromisoformat(last_update)).total_seconds()
+            st.write(f"Last update: {age:.1f}s ago")
         else:
-            st.warning("⚠️ No fresh shared data")
-            st.write("Using local generation")
+            st.warning("⚠️ No fresh dashboard data")
     except Exception as e:
-        st.error(f"❌ Sync error: {str(e)}")
+        st.error(f"❌ Error reading shared state: {e}")
     
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("🔄 Refresh"):
-            st.session_state.data_buffer = []
-            st.rerun()
-    
-    with col2:
-        if st.button("🧹 Clear Cache"):
-            # مسح الـ pending data باستخدام الـ function الجديدة
-            shared_state.clear_pending_data()
-            st.session_state.data_buffer = []
-            st.rerun()
-    
-    # معلومات تشخيصية إضافية
-    st.markdown("---")
-    st.write("### 🔍 Debug Info")
-    st.write(f"Local buffer: {len(st.session_state.data_buffer)} points")
-    st.write(f"Current scenario: {st.session_state.current_scenario}")
-    st.write(f"Pending data: {shared_state.get_pending_data_status()}")
-    
-    # عرض آخر تحديث محلي
-    if hasattr(st.session_state, 'last_update'):
-        local_age = (datetime.now() - st.session_state.last_update).total_seconds()
-        st.write(f"Local update: {local_age:.1f}s ago")
-    
-    # زر اختبار الاتصال
-    if st.button("🧪 Test Connection"):
-        try:
-            test_result = shared_state.load_shared_state()
-            if test_result:
-                st.success(f"✅ Connection OK - {len(test_result.get('data_buffer', []))} points")
-            else:
-                st.error("❌ No data loaded")
-        except Exception as e:
-            st.error(f"❌ Connection failed: {str(e)}")
+    if st.button("🔄 Force Refresh"):
+        st.session_state.data_buffer = []
+        st.rerun()
 
 # Scenario Selector (Hidden but functional)
 if 'scenario' in st.session_state:
