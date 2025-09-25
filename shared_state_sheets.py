@@ -4,15 +4,26 @@ import gspread
 from google.oauth2.service_account import Credentials
 import threading
 import time
-import os
 import streamlit as st
 
 # Google Sheets Configuration - استخدام st.secrets
 SPREADSHEET_ID = st.secrets["GOOGLE_SHEETS_ID"]
 WORKSHEET_NAME = "dashboard_data"
 
-# Service Account File - استخدام st.secrets
-SERVICE_ACCOUNT_FILE = st.secrets["SERVICE_ACCOUNT_FILE"]
+# Service account credentials - استخدام st.secrets
+SERVICE_ACCOUNT_INFO = {
+    "type": st.secrets["SERVICE_ACCOUNT"]["type"],
+    "project_id": st.secrets["SERVICE_ACCOUNT"]["project_id"],
+    "private_key_id": st.secrets["SERVICE_ACCOUNT"]["private_key_id"],
+    "private_key": st.secrets["SERVICE_ACCOUNT"]["private_key"],
+    "client_email": st.secrets["SERVICE_ACCOUNT"]["client_email"],
+    "client_id": st.secrets["SERVICE_ACCOUNT"]["client_id"],
+    "auth_uri": st.secrets["SERVICE_ACCOUNT"]["auth_uri"],
+    "token_uri": st.secrets["SERVICE_ACCOUNT"]["token_uri"],
+    "auth_provider_x509_cert_url": st.secrets["SERVICE_ACCOUNT"]["auth_provider_x509_cert_url"],
+    "client_x509_cert_url": st.secrets["SERVICE_ACCOUNT"]["client_x509_cert_url"],
+    "universe_domain": st.secrets["SERVICE_ACCOUNT"]["universe_domain"]
+}
 
 # Global variables for optimization
 _sheets_client = None
@@ -29,7 +40,7 @@ def get_sheets_client():
             scope = ["https://spreadsheets.google.com/feeds", 
                      "https://www.googleapis.com/auth/drive"]
             
-            credentials = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=scope)
+            credentials = Credentials.from_service_account_info(SERVICE_ACCOUNT_INFO, scopes=scope)
             _sheets_client = gspread.authorize(credentials)
             print("✅ Google Sheets client initialized")
         except Exception as e:
@@ -54,7 +65,7 @@ def get_worksheet():
                 _worksheet_cache = spreadsheet.worksheet(WORKSHEET_NAME)
             except gspread.WorksheetNotFound:
                 _worksheet_cache = spreadsheet.add_worksheet(title=WORKSHEET_NAME, rows="100", cols="10")
-                # Add headers
+                # إضافة headers
                 headers = ["timestamp", "scenario", "row_indices", "prediction_data", "data_buffer", "last_update"]
                 _worksheet_cache.append_row(headers)
                 
@@ -72,16 +83,16 @@ def save_in_background(data_buffer, scenario, row_indices, prediction_data):
         if not worksheet:
             return
         
-        # Prepare data for saving
+        # تحضير البيانات للحفظ
         cleaned_buffer = []
-        for item in data_buffer[-20:]:  # keep last 20 items
+        for item in data_buffer[-20:]:  # قلل العدد لـ 20 بدل 50
             if isinstance(item, dict):
                 cleaned_item = item.copy()
                 if 'timestamp' in cleaned_item:
                     cleaned_item['timestamp'] = cleaned_item['timestamp'].isoformat()
                 cleaned_buffer.append(cleaned_item)
         
-        # Save data to the sheet
+        # حفظ البيانات في الـ sheet
         current_time = datetime.now().isoformat()
         row_data = [
             current_time,
@@ -92,12 +103,12 @@ def save_in_background(data_buffer, scenario, row_indices, prediction_data):
             current_time
         ]
         
-        # Write over row 2 (do not delete rows)
+        # بدل مسح الصفوف، اكتب فوق الصف الثاني (index 2)
         try:
             worksheet.update(f"A2:F2", [row_data])
             print(f"✅ Data updated in Google Sheets at {datetime.now().strftime('%H:%M:%S')}")
         except Exception as e:
-            # If update fails, try append
+            # لو فشل التحديث، جرب الإضافة
             worksheet.append_row(row_data)
             print(f"✅ Data appended to Google Sheets at {datetime.now().strftime('%H:%M:%S')}")
             
@@ -105,12 +116,12 @@ def save_in_background(data_buffer, scenario, row_indices, prediction_data):
         print(f"❌ Background save error: {e}")
 
 def save_shared_state(data_buffer, scenario, row_indices, prediction_data):
-    """Save shared state to Google Sheets (optimized)"""
+    """حفظ الحالة المشتركة في Google Sheets (محسن للأداء)"""
     global _last_save_time, _pending_data
     
     current_time = time.time()
     
-    # Temporarily store data
+    # حفظ البيانات مؤقتاً
     _pending_data = {
         'data_buffer': data_buffer,
         'scenario': scenario,
@@ -118,11 +129,11 @@ def save_shared_state(data_buffer, scenario, row_indices, prediction_data):
         'prediction_data': prediction_data
     }
     
-    # Save to Google Sheets every 15 seconds
+    # احفظ في Google Sheets كل 15 ثانية بدل كل 10 ثوان
     if current_time - _last_save_time >= 15:
         _last_save_time = current_time
         
-        # Save in background thread to avoid slowing UI
+        # اعمل الحفظ في background thread عشان ميبطئش الواجهة
         threading.Thread(
             target=save_in_background,
             args=(data_buffer, scenario, row_indices, prediction_data),
@@ -131,18 +142,19 @@ def save_shared_state(data_buffer, scenario, row_indices, prediction_data):
         
         return True
     
-    return True  # Always return True so UI thinks save succeeded
+    return True  # ارجع True عشان الواجهة تفتكر إن الحفظ نجح
 
 def load_shared_state():
-    """Load shared state from Google Sheets (optimized)"""
+    """قراءة الحالة المشتركة من Google Sheets (محسن)"""
     global _pending_data
     
+    # لو في بيانات مؤقتة، ارجعها فوراً
     if _pending_data:
         return {
             'current_scenario': _pending_data['scenario'],
             'row_indices': _pending_data['row_indices'],
             'prediction_data': _pending_data['prediction_data'],
-            'data_buffer': _pending_data['data_buffer'][-20:],  # last 20 points
+            'data_buffer': _pending_data['data_buffer'][-20:],  # آخر 20 نقطة فقط
             'last_update': datetime.now().isoformat()
         }
     
@@ -155,8 +167,10 @@ def load_shared_state():
         if not records:
             return None
             
+        # اخذ آخر سجل
         latest_record = records[-1]
         
+        # تحويل البيانات من strings إلى objects
         state = {
             'current_scenario': latest_record['scenario'],
             'row_indices': json.loads(latest_record['row_indices']),
@@ -165,7 +179,7 @@ def load_shared_state():
             'last_update': latest_record['last_update']
         }
         
-        # Convert timestamps back to datetime
+        # تحويل timestamps من strings إلى datetime objects
         if 'data_buffer' in state:
             for item in state['data_buffer']:
                 if 'timestamp' in item and isinstance(item['timestamp'], str):
@@ -177,10 +191,11 @@ def load_shared_state():
         print(f"❌ Error loading from Google Sheets: {e}")
         return None
 
-def is_state_fresh(max_age_seconds=30):
-    """Check if shared state is fresh"""
+def is_state_fresh(max_age_seconds=30):  # زود الوقت لـ 30 ثانية
+    """فحص إن الحالة المشتركة حديثة"""
     global _pending_data
     
+    # لو في بيانات مؤقتة، ارجعها كـ fresh
     if _pending_data:
         return True, {
             'current_scenario': _pending_data['scenario'],
@@ -205,9 +220,10 @@ def is_state_fresh(max_age_seconds=30):
         return False, None
 
 def test_shared_state():
-    """Test the shared state with Google Sheets"""
+    """اختبار الـ shared state مع Google Sheets"""
     print("🧪 Testing optimized Google Sheets shared state...")
     
+    # بيانات تجريبية
     test_data = [{
         'timestamp': datetime.now(),
         'pressure': 35.0,
@@ -221,10 +237,15 @@ def test_shared_state():
         'confidence': 0.8
     }
     
+    # اختبار الحفظ
     success = save_shared_state(test_data, "normal", {"normal": 0}, test_prediction)
     if success:
         print("✅ Save test passed")
+        
+        # انتظر شوية عشان الـ background thread يخلص
         time.sleep(2)
+        
+        # اختبار التحميل
         is_fresh, loaded_state = is_state_fresh(max_age_seconds=60)
         if is_fresh:
             print("✅ Load test passed")
