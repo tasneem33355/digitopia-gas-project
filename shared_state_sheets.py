@@ -5,42 +5,24 @@ from google.oauth2.service_account import Credentials
 import threading
 import time
 
-# Global configuration - سيتم تحميلها عند أول استدعاء
-_config_loaded = False
-SPREADSHEET_ID = None
-WORKSHEET_NAME = "dashboard_data"
-SERVICE_ACCOUNT_INFO = None
-
-def _load_config():
-    """تحميل الإعدادات من st.secrets عند الحاجة"""
-    global _config_loaded, SPREADSHEET_ID, SERVICE_ACCOUNT_INFO
-    
-    if not _config_loaded:
-        import streamlit as st
-        
-        SPREADSHEET_ID = st.secrets["GOOGLE_SHEETS_ID"]
-        
-        SERVICE_ACCOUNT_INFO = {
-            "type": st.secrets["SERVICE_ACCOUNT"]["type"],
-            "project_id": st.secrets["SERVICE_ACCOUNT"]["project_id"],
-            "private_key_id": st.secrets["SERVICE_ACCOUNT"]["private_key_id"],
-            "private_key": st.secrets["SERVICE_ACCOUNT"]["private_key"],
-            "client_email": st.secrets["SERVICE_ACCOUNT"]["client_email"],
-            "client_id": st.secrets["SERVICE_ACCOUNT"]["client_id"],
-            "auth_uri": st.secrets["SERVICE_ACCOUNT"]["auth_uri"],
-            "token_uri": st.secrets["SERVICE_ACCOUNT"]["token_uri"],
-            "auth_provider_x509_cert_url": st.secrets["SERVICE_ACCOUNT"]["auth_provider_x509_cert_url"],
-            "client_x509_cert_url": st.secrets["SERVICE_ACCOUNT"]["client_x509_cert_url"],
-            "universe_domain": st.secrets["SERVICE_ACCOUNT"]["universe_domain"]
-        }
-        
-        _config_loaded = True
-
 # Global variables for optimization
 _sheets_client = None
 _worksheet_cache = None
 _last_save_time = 0
 _pending_data = None
+
+# Configuration
+WORKSHEET_NAME = "dashboard_data"
+
+def get_secrets():
+    """Get secrets safely - only when streamlit is ready"""
+    try:
+        import streamlit as st
+        return st.secrets
+    except Exception as e:
+        print(f"Warning: Could not access streamlit secrets: {e}")
+        # Fallback - return None so app can work without Google Sheets
+        return None
 
 def get_sheets_client():
     """Initialize Google Sheets client with caching"""
@@ -48,13 +30,29 @@ def get_sheets_client():
     
     if _sheets_client is None:
         try:
-            # تحميل الإعدادات أولاً
-            _load_config()
+            secrets = get_secrets()
+            if not secrets:
+                print("❌ No secrets available - Google Sheets disabled")
+                return None
             
             scope = ["https://spreadsheets.google.com/feeds", 
                      "https://www.googleapis.com/auth/drive"]
             
-            credentials = Credentials.from_service_account_info(SERVICE_ACCOUNT_INFO, scopes=scope)
+            service_account_info = {
+                "type": secrets["SERVICE_ACCOUNT"]["type"],
+                "project_id": secrets["SERVICE_ACCOUNT"]["project_id"],
+                "private_key_id": secrets["SERVICE_ACCOUNT"]["private_key_id"],
+                "private_key": secrets["SERVICE_ACCOUNT"]["private_key"],
+                "client_email": secrets["SERVICE_ACCOUNT"]["client_email"],
+                "client_id": secrets["SERVICE_ACCOUNT"]["client_id"],
+                "auth_uri": secrets["SERVICE_ACCOUNT"]["auth_uri"],
+                "token_uri": secrets["SERVICE_ACCOUNT"]["token_uri"],
+                "auth_provider_x509_cert_url": secrets["SERVICE_ACCOUNT"]["auth_provider_x509_cert_url"],
+                "client_x509_cert_url": secrets["SERVICE_ACCOUNT"]["client_x509_cert_url"],
+                "universe_domain": secrets["SERVICE_ACCOUNT"]["universe_domain"]
+            }
+            
+            credentials = Credentials.from_service_account_info(service_account_info, scopes=scope)
             _sheets_client = gspread.authorize(credentials)
             print("✅ Google Sheets client initialized")
         except Exception as e:
@@ -69,14 +67,16 @@ def get_worksheet():
     
     if _worksheet_cache is None:
         try:
-            # تحميل الإعدادات أولاً
-            _load_config()
-            
+            secrets = get_secrets()
+            if not secrets:
+                return None
+                
             client = get_sheets_client()
             if not client:
                 return None
                 
-            spreadsheet = client.open_by_key(SPREADSHEET_ID)
+            spreadsheet_id = secrets["GOOGLE_SHEETS_ID"]
+            spreadsheet = client.open_by_key(spreadsheet_id)
             
             try:
                 _worksheet_cache = spreadsheet.worksheet(WORKSHEET_NAME)
@@ -98,6 +98,7 @@ def save_in_background(data_buffer, scenario, row_indices, prediction_data):
     try:
         worksheet = get_worksheet()
         if not worksheet:
+            print("⚠️ No worksheet available - skipping save")
             return
         
         # تحضير البيانات للحفظ
