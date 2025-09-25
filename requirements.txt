@@ -134,3 +134,5 @@ webencodings==0.5.1
 websocket-client==1.8.0
 widgetsnbextension==4.0.14
 xgboost==3.0.5
+gspread==6.1.4
+oauth2client==4.1.3
