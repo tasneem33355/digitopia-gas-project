@@ -433,9 +433,7 @@ if st.button("🗑️ Clear Chat"):
     st.session_state.chat_history = []
     st.rerun()
 
-# ===============================
 # Sidebar Sync Status (UPDATED to Google Sheets)
-# ===============================
 with st.sidebar:
     st.markdown("---")
     st.write("### 🔄 Sync Status")
@@ -461,9 +459,7 @@ with st.sidebar:
 if 'scenario' in st.session_state:
     st.session_state.current_scenario = st.session_state.scenario
 
-# ===============================
 # Custom Sidebar Style
-# ===============================
 st.markdown(
     """
     <style>
