@@ -53,7 +53,7 @@ Gas distribution systems are **critical national infrastructure**. Failures can 
 
 ##  Team Roles  
 - **Tasneem:** Data generation, feature engineering, AI model training, dashboard architecture.  
-- **Ahmad:** Exploratory data analysis (EDA), chatbot architecture, testing, final integration.  
+- **Ahmad:** Exploratory data analysis (EDA), chatbot architecture, final integration.  
 - **Kareem:** UML diagrams, ERD design, database modeling.  
 - **Yousef:** Video preparation, linking dashboard results with chatbot via API.  
 
