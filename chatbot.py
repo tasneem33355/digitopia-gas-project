@@ -232,7 +232,7 @@ if 'current_scenario' not in st.session_state:
 if 'last_update' not in st.session_state:
     st.session_state.last_update = datetime.now()
 
-# ★ Get Current System Data (Synchronized with Dashboard) - UPDATED
+# Get Current System Data (Synchronized with Dashboard) - UPDATED
 def get_current_system_data():
     """Get synchronized data from dashboard - FIXED VERSION"""
     
