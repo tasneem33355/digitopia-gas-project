@@ -75,6 +75,28 @@ def load_model():
 model, feature_columns = load_model()
 
 # ===============================
+# Load Model 2 (Failure Type Classification)
+# ===============================
+@st.cache_resource
+def load_failure_type_model():
+    """تحميل المودل الثاني الخاص بتصنيف نوع العطل"""
+    try:
+        from catboost import CatBoostClassifier
+        model2 = CatBoostClassifier()
+        model2.load_model("failure_type_catboost_full.cbm")
+        feature_columns_model2 = joblib.load("feature_columns_model2.pkl")
+        label_encoder = joblib.load("failure_label_encoder_full.pkl")
+        return model2, feature_columns_model2, label_encoder
+    except FileNotFoundError:
+        st.sidebar.warning("⚠️ Failure Type Model not found - Feature disabled")
+        return None, None, None
+    except Exception as e:
+        st.sidebar.error(f"❌ Error loading Failure Type Model: {e}")
+        return None, None, None
+
+model2, feature_columns_model2, label_encoder = load_failure_type_model()
+
+# ===============================
 # Load CSV Data (Cached)
 # ===============================
 @st.cache_data
@@ -213,6 +235,40 @@ def predict_with_model(features):
     except Exception as e:
         st.error(f"Prediction error: {str(e)}")
         return 0, [0.8, 0.1, 0.1]
+
+# ===============================
+# NEW FUNCTION: Predict Failure Type
+# ===============================
+def predict_failure_type(df):
+    """
+    يتنبأ بنوع العطل باستخدام المودل الثاني
+    يشتغل بس لما يكون في Failure
+    """
+    if model2 is None or feature_columns_model2 is None or label_encoder is None:
+        return None
+    
+    try:
+        # التأكد من وجود كل الأعمدة المطلوبة
+        df_copy = df.copy()
+        for col in feature_columns_model2:
+            if col not in df_copy.columns:
+                df_copy[col] = 0
+        
+        # ترتيب الأعمدة بنفس ترتيب التدريب
+        X_input = df_copy[feature_columns_model2].astype(float).values
+        
+        # أخذ آخر صف للتنبؤ
+        X_latest = X_input[-1:] if len(X_input) > 0 else X_input
+        
+        # Prediction
+        y_pred_idx = model2.predict(X_latest).astype(int)
+        y_pred_label = label_encoder.inverse_transform(y_pred_idx)
+        
+        return y_pred_label[0] if len(y_pred_label) > 0 else None
+        
+    except Exception as e:
+        st.error(f"Failure Type Prediction Error: {str(e)}")
+        return None
 
 # ===============================
 # Initialize Session State
@@ -383,6 +439,38 @@ if st.session_state.data_buffer:
     with col4:
         health = (1 - probabilities[2]) * 100
         st.metric("System Health", f"{health:.0f}%")
+
+    # ===============================
+    # NEW SECTION: Failure Type Display
+    # ===============================
+    if prediction == 2:  # فقط لو في Failure
+        st.markdown("---")
+        failure_type = predict_failure_type(df)
+        
+        if failure_type:
+            # عرض نوع العطل بشكل بارز
+            st.markdown("""
+            <div style='background: linear-gradient(135deg, #8B0000, #DC143C); 
+                        padding: 20px; 
+                        border-radius: 15px; 
+                        border: 3px solid #FF6347;
+                        box-shadow: 0 8px 20px rgba(220, 20, 60, 0.5);'>
+                <h2 style='color: #FDF5E6; text-align: center; margin: 0;'>
+                    ⚠️ FAILURE TYPE DETECTED ⚠️
+                </h2>
+                <h1 style='color: gold; text-align: center; margin: 10px 0; font-size: 36px;'>
+                    """ + str(failure_type) + """
+                </h1>
+                <p style='color: #FDF5E6; text-align: center; margin: 0; font-size: 16px;'>
+                    Immediate action required to prevent system damage
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            st.sidebar.markdown("---")
+            st.sidebar.error(f"🚨 FAILURE TYPE: **{failure_type}**")
+        else:
+            st.warning("⚠️ Failure detected but type classification unavailable")
 
     st.sidebar.write("### Debug Info")
     st.sidebar.write(f"Prediction: {prediction} ({status_names[prediction]})")
