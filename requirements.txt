@@ -12,3 +12,6 @@ matplotlib==3.10.6
 gspread==6.1.4
 google-auth==2.35.0
 google-auth-oauthlib==1.2.1
+langchain-google-genai==3.1.0
+langchain==1.0.8
+langchain-core==1.0.6
