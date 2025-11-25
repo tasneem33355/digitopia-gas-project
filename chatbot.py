@@ -6,6 +6,7 @@ import joblib
 import shared_state
 import os
 import json
+import re
 
 import langchain
 import langchain_google_genai
@@ -14,6 +15,194 @@ from langchain.agents import create_agent
 from langchain.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage
+import SYSTEM_PROMPT
+from pydantic import BaseModel, Field
+
+try:
+    from langchain_core.output_parsers import PydanticOutputParser
+except Exception:
+    PydanticOutputParser = None
+
+
+# JSON validator for agent responses
+REQUIRED_KEYS = {
+    "fault_type",
+    "confidence",
+    "summary",
+    "immediate_actions",
+    "preventive_tips",
+    "recommended_checks",
+    "escalation_required",
+    "escalation_steps",
+}
+
+
+def parse_and_validate_json(text: str):
+    """Try to parse `text` as JSON and ensure required keys exist.
+
+    Returns (obj, None) on success or (None, error_string) on failure.
+    """
+    try:
+        obj = json.loads(text)
+    except Exception:
+        return None, "invalid_json"
+
+    if not isinstance(obj, dict):
+        return None, "not_object"
+
+    missing = REQUIRED_KEYS - set(obj.keys())
+    if missing:
+        return None, f"missing_keys:{sorted(list(missing))}"
+
+    return obj, None
+
+
+def enforce_json_from_agent(initial_prompt: str, max_retries: int = 1):
+    """Request a JSON object from `agent` using `initial_prompt` and validate it.
+
+    If the first response is invalid, attempt `max_retries` corrective re-prompts.
+    Returns a tuple (obj, raw_text, error) where `obj` is the parsed dict or None.
+    """
+    # Try to use a PydanticOutputParser for stricter format enforcement when available
+    parser = None
+    if PydanticOutputParser is not None:
+
+        class DiagnosisSchema(BaseModel):
+            fault_type: str = Field(...)
+            confidence: float = Field(...)
+            summary: str = Field(...)
+            immediate_actions: list[str] = Field(...)
+            preventive_tips: list[str] = Field(...)
+            recommended_checks: list[str] = Field(...)
+            escalation_required: bool = Field(...)
+            escalation_steps: list[str] = Field(...)
+
+        try:
+            parser = PydanticOutputParser(pydantic_object=DiagnosisSchema)
+            format_instructions = parser.get_format_instructions()
+            initial_prompt = format_instructions + "\n\n" + initial_prompt
+        except Exception:
+            parser = None
+
+    # Obtain initial raw response (prefer agent, fallback to low-level LLM)
+    try:
+        raw = agent.run(initial_prompt)
+    except Exception as e:
+        try:
+            llm_result = llm.generate([[HumanMessage(content=initial_prompt)]])
+            if hasattr(llm_result, "generations"):
+                raw = llm_result.generations[0][0].text
+            elif isinstance(llm_result, str):
+                raw = llm_result
+            elif hasattr(llm_result, "content"):
+                raw = llm_result.content
+            else:
+                raw = str(llm_result)
+        except Exception as e2:
+            return None, "", f"agent_and_llm_failed: {e}; {e2}"
+
+    # Helper to attempt parsing a raw string using parser then fallback validator
+    def try_parse(raw_text: str):
+        if not raw_text:
+            return None, "empty"
+
+        if parser is not None:
+            try:
+                parsed_obj = parser.parse(raw_text)
+                if hasattr(parsed_obj, "dict"):
+                    return parsed_obj.dict(), None
+                if isinstance(parsed_obj, dict):
+                    return parsed_obj, None
+            except Exception:
+                pass
+
+        obj, err = parse_and_validate_json(raw_text)
+        if obj is not None:
+            return obj, None
+        return None, err
+
+    obj, err = try_parse(raw)
+    if obj is not None:
+        return obj, raw, None
+
+    # Try corrective re-prompts
+    for _ in range(max_retries):
+        correction_prompt = (
+            "Your previous reply was not valid JSON following the required schema.\n"
+            "Return only a single JSON object following this schema exactly:\n"
+            '{\n  "fault_type": string,\n  "confidence": float,\n  "summary": string,\n  "immediate_actions": [string],\n  "preventive_tips": [string],\n  "recommended_checks": [string],\n  "escalation_required": boolean,\n  "escalation_steps": [string]\n}\n\n'
+            "Previous reply:\n" + raw + "\n\nNow provide the corrected JSON only."
+        )
+
+        try:
+            raw2 = agent.run(correction_prompt)
+        except Exception:
+            try:
+                llm_result = llm.generate([[HumanMessage(content=correction_prompt)]])
+                if hasattr(llm_result, "generations"):
+                    raw2 = llm_result.generations[0][0].text
+                elif isinstance(llm_result, str):
+                    raw2 = llm_result
+                elif hasattr(llm_result, "content"):
+                    raw2 = llm_result.content
+                else:
+                    raw2 = str(llm_result)
+            except Exception as e:
+                return None, raw, f"reprompt_failed: {e}"
+
+        obj2, err2 = try_parse(raw2)
+        if obj2 is not None:
+            return obj2, raw2, None
+
+        # prepare for next retry
+        raw = raw2
+        err = err2
+
+    return None, raw, err
+
+
+def render_diagnosis_html(obj: dict) -> str:
+    """Render the validated diagnosis JSON as structured HTML."""
+    fault = obj.get("fault_type", "unknown")
+    confidence = obj.get("confidence", 0.0)
+    summary = obj.get("summary", "")
+    immediate = obj.get("immediate_actions", []) or []
+    preventive = obj.get("preventive_tips", []) or []
+    checks = obj.get("recommended_checks", []) or []
+    escalation_required = obj.get("escalation_required", False)
+    escalation_steps = obj.get("escalation_steps", []) or []
+
+    def render_list(items):
+        if not items:
+            return "<li>None</li>"
+        return "".join(f"<li>{str(i)}</li>" for i in items)
+
+    html = f"""
+<div style='background:#1A3F66;color:#F7F9F9;padding:14px;border-radius:10px;'>
+    <h3 style='margin:0 0 8px 0;'>🔎 Diagnosis: <span style='color:#FFD700'>{fault}</span></h3>
+    <p style='margin:0 0 8px 0;'><strong>Confidence:</strong> {confidence:.2f} — <strong>Summary:</strong> {summary}</p>
+    <div style='display:flex; gap:18px; align-items:flex-start;'>
+        <div style='flex:1;'>
+            <h4 style='margin:8px 0 6px 0;'>Immediate Actions</h4>
+            <ol style='margin:0 0 8px 18px;'>{render_list(immediate)}</ol>
+        </div>
+        <div style='flex:1;'>
+            <h4 style='margin:8px 0 6px 0;'>Preventive Tips</h4>
+            <ul style='margin:0 0 8px 18px;'>{render_list(preventive)}</ul>
+        </div>
+        <div style='flex:1;'>
+            <h4 style='margin:8px 0 6px 0;'>Recommended Checks</h4>
+            <ul style='margin:0 0 8px 18px;'>{render_list(checks)}</ul>
+        </div>
+    </div>
+    <p style='margin:6px 0 0 0;'><strong>Escalation Required:</strong> {"Yes" if escalation_required else "No"}</p>
+    <div style='margin-top:6px;'>
+        <strong>Escalation Steps:</strong>
+        <ol style='margin:6px 0 0 18px;'>{render_list(escalation_steps)}</ol>
+    </div>
+</div>
+"""
+    return html
 
 
 # Config Streamlit Page
@@ -256,6 +445,93 @@ def predict_with_model(features):
         return 0, [0.8, 0.1, 0.1]
 
 
+def _extract_json_from_text(text: str):
+    """Try to extract the first JSON object found in `text`.
+
+    Returns the parsed object or None if parsing fails.
+    """
+    if not isinstance(text, str):
+        return None
+
+    # Remove markdown fences
+    cleaned = re.sub(r"```[\s\S]*?```", lambda m: m.group(0).strip("`"), text)
+
+    # Find first { ... } block
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+
+    candidate = cleaned[start : end + 1]
+    try:
+        return json.loads(candidate)
+    except Exception:
+        # Try tolerant parsing by replacing single quotes
+        try:
+            candidate2 = candidate.replace("'", '"')
+            return json.loads(candidate2)
+        except Exception:
+            return None
+
+
+def _normalize_assistant_json(d: dict):
+    """Normalize/complete the assistant JSON into a conforming schema.
+
+    Expected schema keys:
+      - fault_type (str)
+      - confidence (float)
+      - summary (str)
+      - immediate_actions (list[str])
+      - preventive_tips (list[str])
+      - recommended_checks (list[str])
+      - escalation_required (bool)
+      - escalation_steps (list[str])
+    """
+    if not isinstance(d, dict):
+        return None
+
+    out = {}
+    out["fault_type"] = str(d.get("fault_type") or d.get("status") or "None")
+    try:
+        out["confidence"] = float(d.get("confidence", 1.0))
+    except Exception:
+        out["confidence"] = 1.0
+
+    out["summary"] = str(
+        d.get("summary") or d.get("diagnosis") or "No summary provided"
+    )
+
+    def to_list(k):
+        v = d.get(k) or []
+        if isinstance(v, str):
+            return [v]
+        if isinstance(v, list):
+            return [str(x) for x in v]
+        return []
+
+    out["immediate_actions"] = to_list("immediate_actions")
+    out["preventive_tips"] = to_list("preventive_tips")
+    out["recommended_checks"] = to_list("recommended_checks")
+    out["escalation_required"] = bool(d.get("escalation_required", False))
+    out["escalation_steps"] = to_list("escalation_steps")
+
+    return out
+
+
+def _wrap_with_badge(html: str, status: str) -> str:
+    """Prepend a small colored badge indicating parse status: parsed / repaired / raw."""
+    colors = {
+        "parsed": "#58D68D",
+        "repaired": "#F7DC6F",
+        "raw": "#F1948A",
+    }
+    labels = {"parsed": "Parsed", "repaired": "Repaired", "raw": "Raw"}
+    color = colors.get(status, "#D3D3D3")
+    label = labels.get(status, status)
+    badge = f"<div style='display:inline-block;background:{color};color:#000;padding:4px 8px;border-radius:6px;margin-bottom:8px;font-weight:600;'>{label}</div>"
+    return badge + html
+
+
 # Initialize Session State
 if "data_buffer" not in st.session_state:
     st.session_state.data_buffer = []
@@ -328,9 +604,25 @@ def get_current_system_data():
 
 
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
+    model="gemini-2.5-flash-lite",
     temperature=0.3,
     google_api_key=st.secrets["GOOGLE_API_KEY"],
+    max_output_tokens=None,
+)
+agent = create_agent(model=llm, system_prompt=SYSTEM_PROMPT.system_prompt)
+
+# Persistent sidebar control: let user choose whether LLM should handle all queries.
+# Placing this at top-level ensures the checkbox is always rendered and its
+# value is available in `st.session_state` across reruns.
+st.sidebar.checkbox(
+    "Use LLM for all user questions",
+    key="use_llm_for_all",
+    value=False,
+    help=(
+        "When enabled, every user query (including quick-action buttons) is sent to the LLM. "
+        "When disabled, common metric queries use built-in fast answers while the LLM remains "
+        "available for open questions or mitigation/suggestion requests."
+    ),
 )
 
 
@@ -342,16 +634,8 @@ def chatbot_response(query, current_data, prediction, probabilities):
     query = query.lower()
 
     # Control whether the LLM handles all queries (slower) or only unknown/suggestive ones.
-    # Default is False so quick-action buttons use the fast built-in handlers.
-    USE_LLM_FOR_ALL = st.sidebar.checkbox(
-        "Use LLM for all user questions",
-        value=False,
-        help=(
-            "When enabled, every user query (including quick-action buttons) is sent to the LLM. "
-            "When disabled, common metric queries use built-in fast answers while the LLM remains "
-            "available for open questions or mitigation/suggestion requests."
-        ),
-    )
+    # Read the persistent sidebar checkbox value placed in `st.session_state`.
+    USE_LLM_FOR_ALL = st.session_state.get("use_llm_for_all", False)
     if USE_LLM_FOR_ALL:
         try:
             prompt = (
@@ -367,20 +651,20 @@ def chatbot_response(query, current_data, prediction, probabilities):
                 "Respond concisely (1-4 sentences). If the user asks for steps or mitigation, include a short ordered list of immediate actions. Prioritize safety and clarity."
             )
 
-            llm_result = llm.generate([[HumanMessage(content=prompt)]])
-            if hasattr(llm_result, "generations"):
-                try:
-                    answer = llm_result.generations[0][0].text
-                except Exception:
-                    answer = str(llm_result)
-            elif isinstance(llm_result, str):
-                answer = llm_result
-            elif hasattr(llm_result, "content"):
-                answer = llm_result.content
+            # Use the agent wrapper (created earlier) instead of calling the
+            # low-level LLM generate API directly. `agent.run` returns a
+            # concise string response for the provided prompt.
+            # Request a validated JSON response from the agent
+            obj, raw, err = enforce_json_from_agent(prompt, max_retries=1)
+            if obj is not None:
+                # Render the validated JSON as structured HTML
+                return render_diagnosis_html(obj)
             else:
-                answer = str(llm_result)
+                # If validation failed, show the raw agent text (with warning)
+                warning = "⚠️ Assistant returned non-conforming JSON. Showing raw response below."
+                safe_raw = (raw or "").replace("<", "&lt;").replace(">", "&gt;")
+                return f"<div style='color:#F1948A;'>{warning}</div><pre style='background:#1A3F66;color:#F7F9F9;padding:12px;border-radius:8px;'>{safe_raw}</pre>"
 
-            return f"<div style='font-size:16px; color:#F7F9F9; background:#1A3F66; padding:12px; border-radius:8px;'>{answer}</div>"
         except Exception as e:
             # Fall through to the built-in handlers if LLM fails
             st.sidebar.error(f"LLM error: {e}")
@@ -389,28 +673,28 @@ def chatbot_response(query, current_data, prediction, probabilities):
     status_names = {0: "NORMAL", 1: "WARNING", 2: "FAILURE"}
     status_colors = {0: "🟢", 1: "🟡", 2: "🔴"}
 
-    if "pressure" in query:
+    if "pressure" == query:
         pressure = current_data["pressure"]
         return f"<span style='font-size:18px; color:#5DADE2;'>📊 Current pressure is <b>{pressure:.1f} bar</b>. Status: {status_colors[prediction]} <b>{status_names[prediction]}</b></span>"
 
-    elif "failure" in query:
+    elif "failure" == query:
         confidence = np.max(probabilities)
         health = (1 - probabilities[2]) * 100
         return f"<span style='font-size:18px; color:#E74C3C;'>🔮 <b>AI Prediction:</b> {status_colors[prediction]} <b>{status_names[prediction]}</b> (Confidence: {confidence:.1%}, Health: {health:.0f}%)</span>"
 
-    elif "energy" in query:
+    elif "energy" == query:
         energy = current_data["energy_consumption"]
         return f"<span style='font-size:18px; color:#AF7AC5;'>🔋 Current energy consumption is <b>{energy:.1f} kWh</b>. System: {status_colors[prediction]} <b>{status_names[prediction]}</b></span>"
 
-    elif "temperature" in query:
+    elif "temperature" == query:
         temp = current_data["temperature"]
         return f"<span style='font-size:18px; color:#F39C12;'>🌡️ Current temperature is <b>{temp:.1f} °C</b>. Status: {status_colors[prediction]} <b>{status_names[prediction]}</b></span>"
 
-    elif "flow" in query:
+    elif "flow" == query:
         flow = current_data["flow_rate"]
         return f"<span style='font-size:18px; color:#76D7C4;'>💧 Current flow rate is <b>{flow:.1f} m³/s</b>. System: {status_colors[prediction]} <b>{status_names[prediction]}</b></span>"
 
-    elif any(word in query for word in ["status", "system", "overview"]):
+    elif any(word == query.lower() for word in ["system status", "overview"]):
         confidence = np.max(probabilities)
         health = (1 - probabilities[2]) * 100
         return f"""<span style='font-size:18px; color:#58D68D;'>📋 <b>System Overview:</b><br>
@@ -451,20 +735,30 @@ def chatbot_response(query, current_data, prediction, probabilities):
                 "Deliver:\n1) One-line diagnosis.\n2) Top 3 immediate actions (ordered).\n3) Suggested monitoring or tests to run.\n"
             )
 
-            llm_result = llm.generate([[HumanMessage(content=prompt)]])
-            if hasattr(llm_result, "generations"):
-                try:
-                    answer = llm_result.generations[0][0].text
-                except Exception:
-                    answer = str(llm_result)
-            elif isinstance(llm_result, str):
-                answer = llm_result
-            elif hasattr(llm_result, "content"):
-                answer = llm_result.content
+            obj, raw, err = enforce_json_from_agent(prompt, max_retries=1)
+            if obj is not None:
+                return _wrap_with_badge(render_diagnosis_html(obj), "parsed")
             else:
-                answer = str(llm_result)
+                # Attempt best-effort repair: extract JSON-like text and normalize to schema
+                repaired_html = None
+                if raw:
+                    parsed = _extract_json_from_text(raw)
+                    if parsed:
+                        normalized = _normalize_assistant_json(parsed)
+                        if normalized:
+                            note = (
+                                "<div style='color:#F7DC6F;'>⚠️ Assistant returned non-conforming JSON; "
+                                "showing a best-effort repaired version.</div>"
+                            )
+                            repaired_html = note + render_diagnosis_html(normalized)
 
-            return f"<div style='font-size:16px; color:#F7F9F9; background:#1A3F66; padding:12px; border-radius:8px;'>{answer}</div>"
+                if repaired_html:
+                    return _wrap_with_badge(repaired_html, "repaired")
+
+                warning = "⚠️ Assistant returned non-conforming JSON. Showing raw response below."
+                safe_raw = (raw or "").replace("<", "&lt;").replace(">", "&gt;")
+                raw_block = f"<div style='color:#F1948A;'>{warning}</div><pre style='background:#1A3F66;color:#F7F9F9;padding:12px;border-radius:8px;'>{safe_raw}</pre>"
+                return _wrap_with_badge(raw_block, "raw")
         except Exception as e:
             return f"<span style='font-size:18px; color:#F1948A;'>⚠️ Unable to reach LLM: {str(e)}. Try again later.</span>"
 
@@ -480,20 +774,31 @@ def chatbot_response(query, current_data, prediction, probabilities):
             f"Status={status_names[prediction]}, probabilities={probabilities.tolist()}, pressure={current_data.get('pressure', 'N/A')}, flow={current_data.get('flow_rate', 'N/A')}\n"
         )
 
-        llm_result = llm.generate([[HumanMessage(content=prompt)]])
-        if hasattr(llm_result, "generations"):
-            try:
-                answer = llm_result.generations[0][0].text
-            except Exception:
-                answer = str(llm_result)
-        elif isinstance(llm_result, str):
-            answer = llm_result
-        elif hasattr(llm_result, "content"):
-            answer = llm_result.content
+        obj, raw, err = enforce_json_from_agent(prompt, max_retries=1)
+        if obj is not None:
+            return _wrap_with_badge(render_diagnosis_html(obj), "parsed")
         else:
-            answer = str(llm_result)
+            repaired_html = None
+            if raw:
+                parsed = _extract_json_from_text(raw)
+                if parsed:
+                    normalized = _normalize_assistant_json(parsed)
+                    if normalized:
+                        note = (
+                            "<div style='color:#F7DC6F;'>⚠️ Assistant returned non-conforming JSON; "
+                            "showing a best-effort repaired version.</div>"
+                        )
+                        repaired_html = note + render_diagnosis_html(normalized)
 
-        return f"<div style='font-size:16px; color:#F7F9F9; background:#1A3F66; padding:12px; border-radius:8px;'>{answer}</div>"
+            if repaired_html:
+                return _wrap_with_badge(repaired_html, "repaired")
+
+            warning = (
+                "⚠️ Assistant returned non-conforming JSON. Showing raw response below."
+            )
+            safe_raw = (raw or "").replace("<", "&lt;").replace(">", "&gt;")
+            raw_block = f"<div style='color:#F1948A;'>{warning}</div><pre style='background:#1A3F66;color:#F7F9F9;padding:12px;border-radius:8px;'>{safe_raw}</pre>"
+            return _wrap_with_badge(raw_block, "raw")
     except Exception:
         return f"<span style='font-size:18px; color:#F1948A;'>❓ Sorry, I didn't understand. Try asking about pressure, failure, temperature, energy, flow, or system status. Current: {status_colors[prediction]} <b>{status_names[prediction]}</b></span>"
 

@@ -1,0 +1,26 @@
+# Python
+.venv/
+venv/
+
+# Streamlit
+.streamlit/
+
+# VSCode
+.vscode/
+
+# python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+# Distribution / packaging
+.Python
+build/
+dist/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+.python-version
+env/
+pyproject.toml
